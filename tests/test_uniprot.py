@@ -1,0 +1,1 @@
+"""Placeholder tests for UniProt integration work in future phases."""

@@ -1,0 +1,1 @@
+"""Placeholder tests for BLAST integration work in future phases."""

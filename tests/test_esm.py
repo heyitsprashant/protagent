@@ -1,0 +1,1 @@
+"""Placeholder tests for ESM embedding work in future phases."""

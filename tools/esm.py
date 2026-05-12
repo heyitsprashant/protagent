@@ -1,0 +1,1 @@
+"""ESM embedding helpers for future ProtAgent pipelines."""

@@ -1,0 +1,1 @@
+"""Pydantic-style schemas for future ProtAgent artifacts."""

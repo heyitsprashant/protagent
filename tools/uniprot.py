@@ -1,0 +1,1 @@
+"""UniProt sequence retrieval helpers for future phases."""

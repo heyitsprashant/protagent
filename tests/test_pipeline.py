@@ -1,0 +1,1 @@
+"""Placeholder tests for the future ProtAgent pipeline."""
