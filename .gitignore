@@ -8,4 +8,4 @@ logs/*
 !logs/.gitkeep
 .DS_Store
 *.egg-info/
-.pytest_cache/
+.pytest_cache/PRD_ProtAgent_Phase0.md
