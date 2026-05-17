@@ -9,3 +9,5 @@ logs/*
 .DS_Store
 *.egg-info/
 .pytest_cache/
+patch_test_pipeline_gemini.py
+PRD_ProtAgent_Phase1validationrun.md
