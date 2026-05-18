@@ -294,12 +294,12 @@ class TestAnnotatorAgent:
 
     @patch("agents.annotator.get_embedding", return_value=np.zeros(320))
     @patch("agents.annotator.get_embedding_summary", return_value={"norm": 1.0, "mean": 0.0, "std": 0.1})
-    @patch("agents.annotator._call_gemini")
-    def test_annotate_returns_draft(self, mock_gemini, mock_summary, mock_embed):
-        mock_gemini.return_value = MOCK_LLM_RESPONSE
+    @patch("agents.annotator._call_openrouter")
+    def test_annotate_returns_draft(self, mock_openrouter, mock_summary, mock_embed):
+        mock_openrouter.return_value = MOCK_LLM_RESPONSE
 
         import os
-        with patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"}):
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
             from agents.annotator import annotate
             draft = annotate(self._make_bundle())
 
@@ -310,16 +310,18 @@ class TestAnnotatorAgent:
 
     @patch("agents.annotator.get_embedding", return_value=np.zeros(320))
     @patch("agents.annotator.get_embedding_summary", return_value={"norm": 1.0, "mean": 0.0, "std": 0.1})
-    @patch("agents.annotator._call_gemini")
-    def test_malformed_json_returns_error_draft(self, mock_gemini, mock_summary, mock_embed):
-        mock_gemini.return_value = "this is not json at all"
+    @patch("agents.annotator._call_openrouter")
+    def test_malformed_json_returns_error_draft(self, mock_openrouter, mock_summary, mock_embed):
+        mock_openrouter.return_value = "this is not json at all"
 
         import os
-        with patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"}):
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
             from agents.annotator import annotate
             draft = annotate(self._make_bundle())
 
-        assert "ANNOTATION_FAILED" in draft.proposed_function
+        assert "ANNOTATION_FAILED" not in draft.proposed_function
+        assert "fallback" in draft.reasoning.lower()
+        assert draft.evidence_used
 
 
 # ─── Integration Test ──────────────────────────────────────────────────────────
@@ -329,23 +331,40 @@ class TestPipelineIntegration:
     @patch("agents.gatherer.blast.run_blast", return_value=MOCK_BLAST_HITS)
     @patch("agents.annotator.get_embedding", return_value=np.zeros(320))
     @patch("agents.annotator.get_embedding_summary", return_value={"norm": 1.0, "mean": 0.0, "std": 0.1})
-    @patch("agents.annotator._call_gemini", return_value=MOCK_LLM_RESPONSE)
+    @patch("agents.annotator._call_openrouter", return_value=MOCK_LLM_RESPONSE)
+    @patch("agents.critic._call_openrouter", return_value=json.dumps({
+        "passed": True,
+        "challenges": [],
+        "revision_required": False,
+        "critique_reasoning": "Annotation is supported by evidence."
+    }))
+    @patch("agents.explainer._call_openrouter", return_value="High confidence based on strong evidence.")
     def test_full_pipeline_end_to_end(
-        self, mock_gemini, mock_summary, mock_embed, mock_blast, mock_uniprot
+        self,
+        mock_explainer,
+        mock_critic,
+        mock_openrouter,
+        mock_summary,
+        mock_embed,
+        mock_blast,
+        mock_uniprot,
     ):
         import os
         import re
 
-        with patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"}):
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
             from pipeline import run
             result = run(HEMOGLOBIN_FASTA)
 
         assert result["annotation_draft"]["proposed_function"] != ""
         assert result["evidence_bundle"]["evidence_quality"] == "high"
         assert result["elapsed_seconds"] >= 0
+        assert result["critic_verdict"]["passed"] is True
+        assert 0.0 <= result["confidence_report"]["confidence_score"] <= 1.0
+        assert result["confidence_report"]["confidence_label"] in ("high", "medium", "low", "uncertain")
 
         # Verify output JSON was saved — filename uses sanitized sequence_id
         raw_id = result["evidence_bundle"]["sequence_id"]
         safe_id = re.sub(r'[|:\/\\*?"<>]', '_', raw_id)
-        output_path = f"outputs/{safe_id}_phase1.json"
+        output_path = f"outputs/{safe_id}_phase2.json"
         assert os.path.exists(output_path)

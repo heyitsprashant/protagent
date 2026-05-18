@@ -36,3 +36,29 @@ class AnnotationDraft:
     evidence_used: list[str] = field(default_factory=list)
     embedding_shape: tuple = (0,)
     annotated_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+
+
+@dataclass
+class CriticVerdict:
+    sequence_id: str
+    passed: bool
+    challenges: list[str] = field(default_factory=list)
+    revision_required: bool = False
+    revision_round: int = 0
+    critique_reasoning: str = ""
+    critiqued_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+
+
+@dataclass
+class ConfidenceReport:
+    sequence_id: str
+    final_function: str
+    confidence_score: float
+    confidence_label: str
+    go_term_candidates: list[str] = field(default_factory=list)
+    evidence_citations: list[str] = field(default_factory=list)
+    critic_passed: bool = False
+    revision_rounds: int = 0
+    warnings: list[str] = field(default_factory=list)
+    reasoning_summary: str = ""
+    generated_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())

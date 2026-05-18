@@ -18,6 +18,15 @@ python smoke_test.py
 
 If you are on PowerShell and `cp` is unavailable, use `Copy-Item .env.example .env` instead. After cloning on Windows, activate the venv with `venv\Scripts\activate`.
 
+Configure OpenRouter in `.env` before running the annotation pipeline:
+
+```text
+OPENROUTER_API_KEY=your_key_here
+OPENROUTER_MODEL=deepseek/deepseek-v4-flash:free,meta-llama/llama-3.3-70b-instruct:free,meta-llama/llama-3.2-3b-instruct:free,openai/gpt-oss-20b:free
+```
+
+`OPENROUTER_MODEL` accepts a comma-separated fallback list. If one model rate limits or has a transient server error, ProtAgent tries the next model.
+
 ## Project structure
 
 ```text
@@ -51,7 +60,7 @@ Phase 4 packages the research system for evaluation, cleanup, and release-qualit
 
 ## Stack
 
-Python 3.11, Biopython, Requests, HTTPX, Anthropic, LangChain, Transformers, PyTorch CPU, NumPy, FastAPI, Uvicorn, python-dotenv, Pytest, Black, and Ruff.
+Python 3.11, Biopython, Requests, HTTPX, OpenRouter-compatible chat completions, Transformers, PyTorch CPU, NumPy, FastAPI, Uvicorn, python-dotenv, Pytest, Black, and Ruff.
 
 ## Research
 

@@ -52,12 +52,12 @@ def check_python_version() -> bool:
 
 
 def check_api_key() -> bool:
-    value = os.getenv("ANTHROPIC_API_KEY", "").strip()
+    value = os.getenv("OPENROUTER_API_KEY", "").strip()
     if value:
-        print("[PASS] ANTHROPIC_API_KEY present")
+        print("[PASS] OPENROUTER_API_KEY present")
         return True
 
-    print("[FAIL] ANTHROPIC_API_KEY not found or empty")
+    print("[FAIL] OPENROUTER_API_KEY not found or empty")
     return False
 
 
@@ -107,8 +107,6 @@ def main() -> int:
         check_import("biopython", "Bio"),
         check_import("requests"),
         check_import("httpx"),
-        check_import("anthropic"),
-        check_import("langchain"),
         check_import("transformers"),
         check_import("torch"),
         check_import("numpy"),

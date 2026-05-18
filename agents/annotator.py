@@ -2,22 +2,21 @@
 agents/annotator.py
 Agent 2 — Annotator.
 Takes an EvidenceBundle from Agent 1, generates an ESM-2 embedding,
-constructs a structured prompt for Gemini, and returns an AnnotationDraft.
+constructs a structured prompt for OpenRouter, and returns an AnnotationDraft.
 The LLM is forbidden from proposing a function not grounded in fetched evidence.
 
-Uses Google Gemini API (gemini-1.5-flash — free tier available).
-Set GEMINI_API_KEY in your .env file.
-Get a free key at: https://aistudio.google.com/app/apikey
+Uses OpenRouter chat completions.
+Set OPENROUTER_API_KEY in your .env file.
 """
 
 import json
 import logging
-import os
+import re
 from datetime import datetime
 
-import requests
 from dotenv import load_dotenv
 
+from agents.openrouter_client import call_openrouter, get_openrouter_api_key
 from models.schemas import AnnotationDraft, EvidenceBundle
 from tools.esm import get_embedding, get_embedding_summary
 
@@ -25,11 +24,6 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 MAX_RETRIES = 2
-GEMINI_MODEL = "gemini-1.5-flash"
-GEMINI_ENDPOINT = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    f"{GEMINI_MODEL}:generateContent"
-)
 
 SYSTEM_PROMPT = """You are a computational biology expert specializing in protein functional annotation.
 
@@ -52,7 +46,11 @@ You must respond with ONLY a valid JSON object in this exact format:
 Do not include any text outside the JSON object. Do not use markdown code fences."""
 
 
-def _build_user_prompt(bundle: EvidenceBundle, embedding_summary: dict) -> str:
+def _build_user_prompt(
+    bundle: EvidenceBundle,
+    embedding_summary: dict,
+    critic_challenges: list[str] | None = None,
+) -> str:
     lines = [
         f"Protein ID: {bundle.sequence_id}",
         f"Sequence length: {len(bundle.raw_sequence)} amino acids",
@@ -86,46 +84,25 @@ def _build_user_prompt(bundle: EvidenceBundle, embedding_summary: dict) -> str:
     else:
         lines.append("=== BLAST Hits ===\nNo BLAST hits found.\n")
 
+    if critic_challenges:
+        lines.append("=== Critic Challenges (must address) ===")
+        for challenge in critic_challenges:
+            lines.append(f"- {challenge}")
+        lines.append("")
+
     lines.append("Based on the above evidence, propose the protein's function.")
     return "\n".join(lines)
 
 
-def _call_gemini(prompt: str, api_key: str) -> str | None:
-    headers = {"Content-Type": "application/json"}
-    params = {"key": api_key}
-    payload = {
-        "system_instruction": {
-            "parts": [{"text": SYSTEM_PROMPT}]
-        },
-        "contents": [
-            {"role": "user", "parts": [{"text": prompt}]}
-        ],
-        "generationConfig": {
-            "temperature": 0.2,
-            "maxOutputTokens": 1024,
-        }
-    }
-
-    try:
-        resp = requests.post(
-            GEMINI_ENDPOINT,
-            headers=headers,
-            params=params,
-            json=payload,
-            timeout=30,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return data["candidates"][0]["content"]["parts"][0]["text"]
-    except requests.HTTPError as e:
-        logger.error(f"Gemini HTTP error: {e} — {resp.text[:300]}")
-        return None
-    except (KeyError, IndexError) as e:
-        logger.error(f"Unexpected Gemini response structure: {e}")
-        return None
-    except requests.RequestException as e:
-        logger.error(f"Gemini request failed: {e}")
-        return None
+def _call_openrouter(prompt: str, api_key: str) -> str | None:
+    return call_openrouter(
+        system_prompt=SYSTEM_PROMPT,
+        user_prompt=prompt,
+        api_key=api_key,
+        logger=logger,
+        temperature=0.2,
+        max_tokens=1024,
+    )
 
 
 def _parse_llm_response(raw_text: str) -> dict | None:
@@ -135,8 +112,12 @@ def _parse_llm_response(raw_text: str) -> dict | None:
         cleaned = "\n".join(
             lines[1:-1] if lines[-1].strip() == "```" else lines[1:]
         )
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        cleaned = cleaned[start:end + 1]
     try:
-        parsed = json.loads(cleaned)
+        parsed = json.loads(cleaned, strict=False)
         required = {"proposed_function", "go_term_candidates", "reasoning", "evidence_used"}
         if not required.issubset(parsed.keys()):
             logger.error(f"LLM response missing fields: {required - parsed.keys()}")
@@ -147,7 +128,57 @@ def _parse_llm_response(raw_text: str) -> dict | None:
         return None
 
 
-def annotate(bundle: EvidenceBundle) -> AnnotationDraft:
+def _clean_description(description: str) -> str:
+    text = description.strip()
+    rec_name = re.search(r"RecName:\s*Full=([^;>\[]+)", text)
+    if rec_name:
+        text = rec_name.group(1)
+    text = re.sub(r"\s*\[[^\]]+\]\s*", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip(" .;") or "uncharacterized protein"
+
+
+def _fallback_annotation(bundle: EvidenceBundle, embedding_shape: tuple) -> AnnotationDraft:
+    hits = bundle.uniprot_hits + bundle.blast_hits
+    if not hits:
+        function = "ANNOTATION_FAILED - no evidence available to support a function."
+        reasoning = "The LLM response could not be parsed, and no UniProt or BLAST evidence was available."
+        evidence_used: list[str] = []
+    else:
+        best_hit = max(hits, key=lambda h: h.identity_pct)
+        description = _clean_description(best_hit.description)
+        if best_hit.identity_pct >= 70.0:
+            function = f"Likely {description}, based on high-identity homology evidence."
+        elif best_hit.identity_pct >= 30.0:
+            function = f"Possible {description}, based on moderate homology evidence."
+        else:
+            function = f"Low-confidence similarity to {description}."
+        reasoning = (
+            "The LLM response could not be parsed, so ProtAgent generated a conservative "
+            f"evidence-grounded fallback from the best hit: {best_hit.accession} "
+            f"({best_hit.identity_pct:.1f}% identity, E-value {best_hit.e_value:.2e})."
+        )
+        evidence_used = [
+            f"{best_hit.accession} - fallback from {best_hit.source} hit at "
+            f"{best_hit.identity_pct:.1f}% identity"
+        ]
+
+    go_terms = []
+    for hit in bundle.uniprot_hits:
+        go_terms.extend(hit.go_terms)
+
+    return AnnotationDraft(
+        sequence_id=bundle.sequence_id,
+        proposed_function=function,
+        go_term_candidates=go_terms[:5],
+        reasoning=reasoning,
+        evidence_used=evidence_used,
+        embedding_shape=embedding_shape,
+        annotated_at=datetime.utcnow().isoformat(),
+    )
+
+
+def annotate(bundle: EvidenceBundle, critic_challenges: list[str] | None = None) -> AnnotationDraft:
     logger.info(f"=== Agent 2: Annotator started for {bundle.sequence_id} ===")
 
     # ESM-2 embedding
@@ -160,20 +191,14 @@ def annotate(bundle: EvidenceBundle) -> AnnotationDraft:
         embedding_shape = (0,)
         embedding_summary = {"norm": 0, "mean": 0, "std": 0}
 
-    user_prompt = _build_user_prompt(bundle, embedding_summary)
+    user_prompt = _build_user_prompt(bundle, embedding_summary, critic_challenges)
 
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        raise EnvironmentError(
-            "GEMINI_API_KEY not found in environment.\n"
-            "Get a free key at: https://aistudio.google.com/app/apikey\n"
-            "Add to .env: GEMINI_API_KEY=your_key_here"
-        )
+    api_key = get_openrouter_api_key()
 
     parsed_response = None
     for attempt in range(1, MAX_RETRIES + 1):
-        logger.info(f"Calling Gemini API (attempt {attempt}/{MAX_RETRIES})...")
-        raw_text = _call_gemini(user_prompt, api_key)
+        logger.info(f"Calling OpenRouter API (attempt {attempt}/{MAX_RETRIES})...")
+        raw_text = _call_openrouter(user_prompt, api_key)
         if raw_text:
             parsed_response = _parse_llm_response(raw_text)
             if parsed_response:
@@ -181,15 +206,8 @@ def annotate(bundle: EvidenceBundle) -> AnnotationDraft:
             logger.warning(f"Parse failed on attempt {attempt}. Retrying...")
 
     if not parsed_response:
-        return AnnotationDraft(
-            sequence_id=bundle.sequence_id,
-            proposed_function="ANNOTATION_FAILED — could not parse LLM response after retries.",
-            go_term_candidates=[],
-            reasoning="LLM returned malformed JSON on all attempts.",
-            evidence_used=[],
-            embedding_shape=embedding_shape,
-            annotated_at=datetime.utcnow().isoformat(),
-        )
+        logger.warning("LLM annotation failed; returning conservative evidence-grounded fallback.")
+        return _fallback_annotation(bundle, embedding_shape)
 
     # Enforce evidence grounding (FR-5.6)
     all_accessions = (
